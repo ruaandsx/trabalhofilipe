@@ -1,0 +1,146 @@
+# HelpDesk TI em microsserviços.  Para subir tudo:  docker compose up --build
+# Só o gateway aparece para fora (http://localhost:8000). Os demais só se enxergam pela rede interna.
+
+x-servico: &servico
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  networks:
+    - interna
+
+x-saude: &saude
+  interval: 10s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
+x-ambiente-jwt: &ambiente-jwt
+  JWT_SEGREDO: ${JWT_SEGREDO:-}                 # se vazio, usa o segredo gerado pelo serviço "segredo"
+  JWT_SEGREDO_ARQUIVO: /segredo/jwt
+  DADOS_EXEMPLO: ${DADOS_EXEMPLO:-1}
+
+services:
+  # Roda uma vez: cria um segredo aleatório (sem ele no código) que TODOS os serviços compartilham.
+  segredo:
+    image: python:3.12-slim
+    command: >
+      python -c "import os, secrets; p='/segredo/jwt';
+      os.path.exists(p) or open(p, 'w').write(secrets.token_urlsafe(48))"
+    volumes:
+      - segredo:/segredo
+    networks: [interna]
+    restart: "no"
+
+  usuarios:
+    <<: *servico
+    build: ./servicos/usuarios
+    environment:
+      <<: *ambiente-jwt
+      SENHA_EXEMPLO: ${SENHA_EXEMPLO:-Helpdesk2026}
+      TOKEN_MINUTOS: ${TOKEN_MINUTOS:-60}
+    volumes:
+      - dados-usuarios:/dados          # banco só deste serviço
+      - segredo:/segredo:ro
+    depends_on:
+      segredo: {condition: service_completed_successfully}
+    healthcheck:
+      <<: *saude
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/saude', timeout=2)"]
+
+  inventario:
+    <<: *servico
+    build: ./servicos/inventario
+    environment:
+      <<: *ambiente-jwt
+    volumes:
+      - dados-inventario:/dados        # banco só deste serviço
+      - segredo:/segredo:ro
+    depends_on:
+      segredo: {condition: service_completed_successfully}
+    healthcheck:
+      <<: *saude
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/saude', timeout=2)"]
+
+  chamados:
+    <<: *servico
+    build: ./servicos/chamados
+    environment:
+      <<: *ambiente-jwt
+      USUARIOS_URL: http://usuarios:8000       # nome do serviço, não "localhost"
+      INVENTARIO_URL: http://inventario:8000
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - dados-chamados:/dados          # banco só deste serviço
+      - segredo:/segredo:ro
+    depends_on:
+      segredo: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      <<: *saude
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/saude', timeout=2)"]
+
+  notificacoes:
+    <<: *servico
+    build: ./servicos/notificacoes
+    environment:
+      <<: *ambiente-jwt
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - dados-notificacoes:/dados      # banco só deste serviço
+      - segredo:/segredo:ro
+    depends_on:
+      segredo: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      <<: *saude
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/saude', timeout=2)"]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes:
+      - dados-redis:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks: [interna]
+    healthcheck:
+      <<: *saude
+      test: ["CMD", "redis-cli", "ping"]
+
+  gateway:
+    <<: *servico
+    build: ./gateway
+    networks:
+      - interna
+      - publica
+    ports:
+      - "127.0.0.1:8000:8000"          # único ponto exposto, só acessível pelo próprio computador
+    depends_on:
+      - usuarios
+      - inventario
+      - chamados
+      - notificacoes
+    healthcheck:
+      <<: *saude
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/', timeout=2)"]
+
+networks:
+  interna:
+    internal: true      # sem acesso à internet e sem portas abertas para fora
+  publica: {}
+
+volumes:
+  segredo:
+  dados-usuarios:
+  dados-inventario:
+  dados-chamados:
+  dados-notificacoes:
+  dados-redis:

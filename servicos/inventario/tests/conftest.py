@@ -1,0 +1,35 @@
+import tests.ajudas  # noqa: F401  (define as variáveis de ambiente antes de importar o app)
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.database import Base, get_db
+from app.main import app
+from tests.ajudas import cabecalho
+
+
+@pytest.fixture
+def cliente():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Sessao = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def db_de_teste():
+        db = Sessao()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = db_de_teste
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def contas():
+    return {"ana": cabecalho(2, "solicitante"), "carla": cabecalho(4, "tecnico"), "admin": cabecalho(1, "admin")}
