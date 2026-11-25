@@ -1,3 +1,7 @@
+ruan pereira gomes de moura
+01808197
+link do video: https://youtu.be/kdhb84ipgTU?si=-299Z_TenPp4TH3J
+
 # HelpDesk TI · microsserviços
 
 Sistema de chamados de TI separado em **microsserviços** (Python + FastAPI + Docker Compose).
